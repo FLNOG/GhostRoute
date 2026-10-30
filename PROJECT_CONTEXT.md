@@ -377,6 +377,23 @@ Correcões aplicadas após revisão detalhada:
 4. ShutdownController: `_allowWindowClose=true` só após `quitFn()` suceder; falha de `destroyTrayFn` é não-fatal.
 5. Limpeza de configs temporárias via `cleanupTempFiles` é última etapa do cleanup.
 6. Handlers IPC mutáveis (`vpn:connect/disconnect`, `identity:generate/activate`, `apps:save-selection`, `selective:start/stop`) bloqueados durante shutdown.
+
+## Lista de aplicativos — primeira etapa de usabilidade
+
+- A interface separa aplicativos **Selecionados** dos demais **Instalados**.
+- Uma consulta única a `Win32_Process` marca executáveis atualmente abertos; o botão
+  “Atualizar” refaz a descoberta e o estado dos processos.
+- Itens adicionados manualmente preservam `source: "manual"` na configuração e podem
+  ser removidos da lista.
+- Instaladores, desinstaladores, atualizadores e atalhos administrativos do Windows são
+  filtrados de forma conservadora.
+- Anticheats conhecidos são bloqueados na seleção. Jogos e launchers conhecidos exibem
+  alerta e exigem confirmação do usuário; a lista é apenas uma proteção auxiliar e não
+  representa garantia de compatibilidade.
+- A opção “Abrir aplicativos automaticamente” pode ser desativada. Nesse modo, o túnel
+  é ativado sem criar processos; aplicativos abertos posteriormente não são encerrados
+  pelo GhostRoute ao desconectar.
+- Microsoft Store/UWP e tratamento avançado de launchers permanecem para a próxima etapa.
 7. Menu “Desconectar VPN”: evita cliques concorrentes, exibe erro sem silenciá-lo.
 8. `src/app-cleanup.js`: fábrica `createCleanupFn()` com dependências injetáveis para testes.
 9. **Correção crítica**: ShutdownController reescrito com máquina de 5 estados (`idle`→`cleaning`→`cleaned`→`quitting`→`done`).

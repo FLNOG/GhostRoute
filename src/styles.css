@@ -48,15 +48,31 @@ header p { margin: 0; color: #a99bb8; font-size: 13px; }
 .app-toolbar { display: flex; gap: 10px; margin: 14px 0 10px; }
 .app-toolbar button { flex: 0 0 auto; }
 .app-list { max-height: 250px; overflow: auto; padding: 6px; border: 1px solid #38264a; border-radius: 12px; background: #0b0711; }
+.selected-list { max-height: 190px; margin-bottom: 14px; border-color: #6d3694; background: linear-gradient(135deg, #170d22, #0b0711); }
+.app-section-heading { display: flex; align-items: center; justify-content: space-between; margin: 15px 2px 7px; }
+.app-section-heading span { color: #e9ddf2; font-size: 12px; font-weight: 750; }
+.app-section-heading small { color: #857491; font-size: 10px; }
 .app-item { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 9px; cursor: pointer; }
 .app-item:hover { background: #21152f; }
+.app-item.blocked { cursor: not-allowed; opacity: .72; }
 .app-item input { width: 17px; height: 17px; margin: 0; accent-color: var(--brand); }
 .app-item img { width: 24px; height: 24px; object-fit: contain; }
 .app-item .app-fallback { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; background: #352047; color: #dcb4ff; font-size: 11px; font-weight: 800; }
 .app-details { min-width: 0; }
 .app-details strong { display: block; font-size: 13px; }
 .app-details small { display: block; overflow: hidden; color: #687188; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.app-meta { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; margin-left: auto; }
+.app-badge { padding: 4px 7px; border-radius: 999px; font-size: 9px; font-weight: 750; white-space: nowrap; }
+.app-badge.running { color: #cda2ff; background: #35134f; }
+.app-badge.warning { color: #f1c982; background: #402d13; }
+.app-badge.blocked { color: #ff9bab; background: #421522; }
+.remove-app { min-height: 28px; padding: 0 9px; border: 1px solid #57376b; background: transparent; color: #cbb3d8; font-size: 11px; }
 .app-empty { padding: 22px; color: #747d91; font-size: 12px; text-align: center; }
+.launch-option { display: flex; align-items: flex-start; gap: 10px; margin: 15px 2px 0; cursor: pointer; }
+.launch-option input { flex: 0 0 auto; width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--brand); }
+.launch-option span, .launch-option small { display: block; }
+.launch-option strong { color: #d9cce3; font-size: 12px; }
+.launch-option small { margin-top: 3px; color: #7f7189; font-size: 10px; font-weight: 400; }
 .identity-card { border-color: #412858; }
 .identity-details { display: grid; grid-template-columns: 180px 1fr; gap: 10px; margin: 12px 0; }
 .identity-details > div { min-width: 0; padding: 12px; border: 1px solid #352445; border-radius: 10px; background: #0b0711; }

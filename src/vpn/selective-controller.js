@@ -270,6 +270,15 @@ function spawnAndConfirm(appDef, _spawnFn = null) {
   });
 }
 
+async function launchSelectedApps(selectedApps, launchApps, _spawnAndConfirmFn = spawnAndConfirm) {
+  const startedProcesses = [];
+  if (!launchApps) return startedProcesses;
+  for (const selectedApp of selectedApps) {
+    startedProcesses.push(await _spawnAndConfirmFn(selectedApp));
+  }
+  return startedProcesses;
+}
+
 /**
  * Solicita stop() de forma segura.
  * Se o guard estiver ocupado (durante start/stop), registra o cleanup como pendente
@@ -403,7 +412,7 @@ async function cleanupSelectiveSession({
   }
 }
 
-async function start({ sourceConfigPath, apps, runtimeDirectory }) {
+async function start({ sourceConfigPath, apps, runtimeDirectory, launchApps = true }) {
   if (selectiveActive) throw new Error('O modo seletivo já está ativo.');
   const releaseOperation = operationGuard.acquire('O modo seletivo já está iniciando.');
   let config = '';
@@ -436,10 +445,7 @@ async function start({ sourceConfigPath, apps, runtimeDirectory }) {
     // spawnAndConfirm registra o listener de 'error' imediatamente após spawn()
     // retornar e aguarda a confirmação do SO via 'spawn' antes de resolver.
     // Somente processos confirmados são inseridos em startedProcesses.
-    for (const selectedApp of selectedApps) {
-      const child = await spawnAndConfirm(selectedApp);
-      startedProcesses.push(child);
-    }
+    startedProcesses.push(...await launchSelectedApps(selectedApps, launchApps));
 
     // Só comita o estado depois que todos os spawns foram confirmados.
     selectiveActive = true;
@@ -450,6 +456,7 @@ async function start({ sourceConfigPath, apps, runtimeDirectory }) {
       state: 'running',
       serverIp: SERVER_IP,
       appCount: selectedApps.length,
+      launchedCount: startedProcesses.length,
       engine: 'WireSock Secure Connect'
     };
     // Falha de notificação (ex.: BrowserWindow já destruída) é não-fatal:
@@ -514,6 +521,7 @@ module.exports = {
   _stop: stop,              // alias para testes com dependências injetadas
   _cleanupSelectiveSession: cleanupSelectiveSession,
   _spawnAndConfirm: spawnAndConfirm,
+  _launchSelectedApps: launchSelectedApps,
   _requestStop: requestStop,
   _processPendingCleanup,
   _getTestState,

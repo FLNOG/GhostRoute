@@ -30,10 +30,17 @@
         <p class="card-copy">Escolha os aplicativos que usarão a VPS. O GhostRoute abre os selecionados com suporte a TCP e UDP; o restante do Windows permanece normal.</p>
         <div class="app-toolbar">
           <input id="appSearch" type="search" placeholder="Buscar aplicativo instalado">
+          <button id="refreshAppsButton" class="ghost" title="Atualizar aplicativos e processos abertos">Atualizar</button>
           <button id="addManualAppButton" class="secondary">Adicionar manualmente</button>
         </div>
-        <div id="appList" class="app-list" aria-label="Aplicativos instalados"><div class="app-empty">Carregando aplicativos…</div></div>
-        <p id="selectedCount" class="hint">Nenhum aplicativo selecionado.</p>
+        <div class="app-section-heading"><span>Selecionados</span><small id="selectedCount">Nenhum selecionado</small></div>
+        <div id="selectedAppList" class="app-list selected-list" aria-label="Aplicativos selecionados"><div class="app-empty">Nenhum aplicativo selecionado.</div></div>
+        <div class="app-section-heading"><span>Aplicativos instalados</span><small>Escolha quais usarão o túnel</small></div>
+        <div id="installedAppList" class="app-list" aria-label="Aplicativos instalados"><div class="app-empty">Carregando aplicativos…</div></div>
+        <label class="launch-option">
+          <input id="launchAppsToggle" type="checkbox" checked>
+          <span><strong>Abrir aplicativos automaticamente</strong><small>Desative para conectar o túnel e abrir os aplicativos por conta própria depois.</small></span>
+        </label>
         <div class="selective-actions">
           <span id="selectiveMessage">Feche os aplicativos selecionados antes de iniciar.</span>
           <button id="startSelectiveButton" class="primary">Iniciar selecionados</button>

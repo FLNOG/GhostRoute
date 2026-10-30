@@ -52,6 +52,7 @@ const selective = require('../vpn/selective-controller');
 const {
   _cleanupSelectiveSession,
   _spawnAndConfirm,
+  _launchSelectedApps,
   _requestStop,
   _processPendingCleanup,
   _getTestState,
@@ -62,6 +63,7 @@ const { createOperationGuard } = require('../vpn/operation-guard');
 const { createShutdownController } = require('../shutdown-controller');
 const { selectiveStateForMenu } = require('../tray-menu-state');
 const { createCleanupFn } = require('../app-cleanup');
+const { classifyAppRisk, isExcludedApp, normalizeItem } = require('../vpn/installed-apps');
 
 // ── utilitário: pasta temporária isolada ─────────────────────────────────
 
@@ -1388,5 +1390,56 @@ describe('ShutdownController — máquina de estados', () => {
     assert.ok(r2.success, 'deve retornar sucesso (estado done)');
     assert.strictEqual(cleanupCount, 1, 'cleanup NÃO deve repetir');
     assert.strictEqual(quitCount,    1, 'quit NÃO deve ser chamado novamente');
+  });
+});
+
+describe('lista de aplicativos — classificação e origem', () => {
+  test('anticheats conhecidos são bloqueados', () => {
+    assert.strictEqual(classifyAppRisk({ name: 'FACEIT Anti-cheat', path: 'C:\\FACEIT\\faceit.exe' }).level, 'blocked');
+    assert.strictEqual(classifyAppRisk({ name: 'BEService', path: 'C:\\BattlEye\\BEService.exe' }).level, 'blocked');
+  });
+
+  test('jogos e launchers conhecidos recebem aviso, não bloqueio', () => {
+    assert.strictEqual(classifyAppRisk({ name: 'Steam', path: 'C:\\Steam\\steam.exe' }).level, 'warning');
+    assert.strictEqual(classifyAppRisk({ name: 'Discord', path: 'C:\\Discord\\Discord.exe' }).level, 'none');
+  });
+
+  test('desinstaladores, instaladores e atalhos do sistema são excluídos', () => {
+    assert.ok(isExcludedApp({ name: 'Uninstall Example', path: 'C:\\Apps\\uninstall.exe' }));
+    assert.ok(isExcludedApp({ name: 'Example Setup', path: 'C:\\Apps\\setup.exe' }));
+    assert.ok(isExcludedApp({ name: 'Prompt', path: 'C:\\Windows\\System32\\cmd.exe' }));
+    assert.ok(!isExcludedApp({ name: 'Discord', path: 'C:\\Apps\\Discord.exe' }));
+  });
+
+  test('normalizeItem preserva origem manual em arquivo válido', () => {
+    const dir = makeTempDir();
+    try {
+      const exe = path.join(dir, 'manual.exe');
+      fs.writeFileSync(exe, 'fake');
+      const item = normalizeItem({ name: 'Manual', path: exe, source: 'manual' });
+      assert.strictEqual(item.source, 'manual');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('launchSelectedApps — abertura opcional', () => {
+  test('não abre processos quando launchApps=false', async () => {
+    let calls = 0;
+    const result = await _launchSelectedApps([{ name: 'Discord', path: 'C:\\Discord.exe' }], false, async () => { calls++; });
+    assert.deepStrictEqual(result, []);
+    assert.strictEqual(calls, 0);
+  });
+
+  test('abre sequencialmente todos quando launchApps=true', async () => {
+    const order = [];
+    const apps = [{ name: 'A', path: 'A.exe' }, { name: 'B', path: 'B.exe' }];
+    const result = await _launchSelectedApps(apps, true, async app => {
+      order.push(app.name);
+      return { pid: order.length };
+    });
+    assert.deepStrictEqual(order, ['A', 'B']);
+    assert.deepStrictEqual(result.map(child => child.pid), [1, 2]);
   });
 });

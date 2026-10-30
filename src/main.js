@@ -190,7 +190,7 @@ function saveConfig(config) {
     selectiveConfigPath: String(config.selectiveConfigPath || ''),
     discordPath: String(config.discordPath || ''),
     selectedApps: Array.isArray(config.selectedApps)
-      ? config.selectedApps.map(installedApps.normalizeItem).filter(Boolean).map(({ name, path: executablePath }) => ({ name, path: executablePath }))
+      ? config.selectedApps.map(installedApps.normalizeItem).filter(Boolean).map(({ name, path: executablePath, source }) => ({ name, path: executablePath, source }))
       : []
   };
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
@@ -335,7 +335,10 @@ ipcMain.handle('vpn:disconnect', async (_event, rawPath) => {
 ipcMain.handle('vpn:diagnostics', () => diagnostics.runDiagnostics());
 
 ipcMain.handle('apps:list', async () => {
-  const discovered = await installedApps.discoverInstalledApps();
+  const [discovered, runningPaths] = await Promise.all([
+    installedApps.discoverInstalledApps(),
+    installedApps.runningExecutablePaths()
+  ]);
   const selected = loadConfig().selectedApps || [];
   const combined = [...discovered, ...selected];
   const seen = new Set();
@@ -348,9 +351,9 @@ ipcMain.handle('apps:list', async () => {
   return Promise.all(unique.map(async item => {
     try {
       const icon = await app.getFileIcon(item.path, { size: 'small' });
-      return { ...item, icon: icon.toDataURL() };
+      return { ...item, running: runningPaths.has(item.path.toLowerCase()), risk: installedApps.classifyAppRisk(item), icon: icon.toDataURL() };
     } catch {
-      return { ...item, icon: '' };
+      return { ...item, running: runningPaths.has(item.path.toLowerCase()), risk: installedApps.classifyAppRisk(item), icon: '' };
     }
   }));
 });
@@ -361,7 +364,8 @@ ipcMain.handle('apps:add-manual', async () => {
     filters: [{ name: 'Aplicativo Windows', extensions: ['exe'] }]
   });
   if (result.canceled) return null;
-  return installedApps.normalizeItem({ path: result.filePaths[0], name: path.basename(result.filePaths[0], '.exe') });
+  const item = installedApps.normalizeItem({ path: result.filePaths[0], name: path.basename(result.filePaths[0], '.exe'), source: 'manual' });
+  return item ? { ...item, running: false, risk: installedApps.classifyAppRisk(item), icon: '' } : null;
 });
 
 ipcMain.handle('apps:save-selection', (_event, rawApps) => {
@@ -407,7 +411,8 @@ ipcMain.handle('selective:start', async (_event, options) => {
     return await selective.start({
       sourceConfigPath: sessionConfig,
       apps: Array.isArray(options?.apps) ? options.apps : [],
-      runtimeDirectory: app.getPath('userData')
+      runtimeDirectory: app.getPath('userData'),
+      launchApps: options?.launchApps !== false
     });
   } finally {
     if (identity?.status === 'active') identityManager.removeMaterializedConfig(sessionConfig);

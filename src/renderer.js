@@ -16,8 +16,11 @@ const ipv6Status = document.querySelector('#ipv6Status');
 const diagnosticsTime = document.querySelector('#diagnosticsTime');
 let operationInProgress = false;
 const appSearch = document.querySelector('#appSearch');
-const appList = document.querySelector('#appList');
+const selectedAppList = document.querySelector('#selectedAppList');
+const installedAppList = document.querySelector('#installedAppList');
 const addManualAppButton = document.querySelector('#addManualAppButton');
+const refreshAppsButton = document.querySelector('#refreshAppsButton');
+const launchAppsToggle = document.querySelector('#launchAppsToggle');
 const selectedCount = document.querySelector('#selectedCount');
 const startSelectiveButton = document.querySelector('#startSelectiveButton');
 const stopSelectiveButton = document.querySelector('#stopSelectiveButton');
@@ -105,7 +108,9 @@ function setSelectiveState(state, text) {
   startSelectiveButton.disabled = selectiveBusy || !selectiveConfigReady || selectedPaths.size === 0;
   appSearch.disabled = blocked;
   addManualAppButton.disabled = blocked;
-  appList.querySelectorAll('input').forEach(input => { input.disabled = blocked; });
+  document.querySelectorAll('#selectedAppList input, #installedAppList input').forEach(input => { input.disabled = blocked; });
+  refreshAppsButton.disabled = blocked;
+  launchAppsToggle.disabled = blocked;
   if (text) selectiveMessage.textContent = text;
   connectButton.disabled = running || residual || operationInProgress || !configField.value;
 }
@@ -116,56 +121,102 @@ function selectedApps() {
 
 function updateSelectedCount() {
   const count = selectedPaths.size;
-  selectedCount.textContent = count === 0
-    ? 'Nenhum aplicativo selecionado.'
-    : `${count} aplicativo${count === 1 ? '' : 's'} selecionado${count === 1 ? '' : 's'}.`;
+  selectedCount.textContent = count === 0 ? 'Nenhum selecionado' : `${count} selecionado${count === 1 ? '' : 's'}`;
   setSelectiveState(selectiveState);
 }
 
-function renderAppList() {
-  const query = appSearch.value.trim().toLocaleLowerCase('pt-BR');
-  const visible = availableApps.filter(item => item.name.toLocaleLowerCase('pt-BR').includes(query));
-  appList.replaceChildren();
-  if (!visible.length) {
-    const empty = document.createElement('div');
-    empty.className = 'app-empty';
-    empty.textContent = query ? 'Nenhum aplicativo encontrado.' : 'Nenhum aplicativo detectado.';
-    appList.append(empty);
-    return;
+function createAppItem(item, selected) {
+  const risk = item.risk || { level: 'none', label: '' };
+  const blocked = risk.level === 'blocked';
+  const label = document.createElement('label');
+  label.className = `app-item${blocked ? ' blocked' : ''}`;
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = selected;
+  checkbox.disabled = blocked || selectiveBusy || selectiveState === 'running';
+  checkbox.addEventListener('change', async () => {
+    const key = item.path.toLowerCase();
+    if (checkbox.checked) selectedPaths.add(key); else selectedPaths.delete(key);
+    renderAppLists();
+    updateSelectedCount();
+    await window.ghostRoute.saveSelectedApps(selectedApps());
+  });
+  const icon = item.icon ? document.createElement('img') : document.createElement('span');
+  if (item.icon) { icon.src = item.icon; icon.alt = ''; }
+  else { icon.className = 'app-fallback'; icon.textContent = item.name.slice(0, 1).toUpperCase(); }
+  const details = document.createElement('span');
+  details.className = 'app-details';
+  const name = document.createElement('strong');
+  name.textContent = item.name;
+  const appPath = document.createElement('small');
+  appPath.textContent = item.path;
+  details.append(name, appPath);
+  const meta = document.createElement('span');
+  meta.className = 'app-meta';
+  if (item.running) {
+    const running = document.createElement('span');
+    running.className = 'app-badge running';
+    running.textContent = 'Aberto';
+    meta.append(running);
   }
-  visible.forEach(item => {
-    const label = document.createElement('label');
-    label.className = 'app-item';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = selectedPaths.has(item.path.toLowerCase());
-    checkbox.disabled = selectiveBusy || selectiveState === 'running';
-    checkbox.addEventListener('change', async () => {
-      const key = item.path.toLowerCase();
-      if (checkbox.checked) selectedPaths.add(key); else selectedPaths.delete(key);
+  if (risk.level !== 'none') {
+    const riskBadge = document.createElement('span');
+    riskBadge.className = `app-badge ${risk.level}`;
+    riskBadge.textContent = risk.label;
+    meta.append(riskBadge);
+  }
+  if (item.source === 'manual') {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'remove-app';
+    remove.textContent = 'Remover';
+    remove.disabled = selectiveBusy || selectiveState === 'running';
+    remove.addEventListener('click', async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      selectedPaths.delete(item.path.toLowerCase());
+      availableApps = availableApps.filter(candidate => candidate.path.toLowerCase() !== item.path.toLowerCase());
+      renderAppLists();
       updateSelectedCount();
       await window.ghostRoute.saveSelectedApps(selectedApps());
     });
-    const icon = item.icon ? document.createElement('img') : document.createElement('span');
-    if (item.icon) { icon.src = item.icon; icon.alt = ''; }
-    else { icon.className = 'app-fallback'; icon.textContent = item.name.slice(0, 1).toUpperCase(); }
-    const details = document.createElement('span');
-    details.className = 'app-details';
-    const name = document.createElement('strong');
-    name.textContent = item.name;
-    const appPath = document.createElement('small');
-    appPath.textContent = item.path;
-    details.append(name, appPath);
-    label.append(checkbox, icon, details);
-    appList.append(label);
-  });
+    meta.append(remove);
+  }
+  label.append(checkbox, icon, details, meta);
+  return label;
+}
+
+function renderAppLists() {
+  const query = appSearch.value.trim().toLocaleLowerCase('pt-BR');
+  const selected = availableApps.filter(item => selectedPaths.has(item.path.toLowerCase()));
+  const installed = availableApps.filter(item => !selectedPaths.has(item.path.toLowerCase()) && item.name.toLocaleLowerCase('pt-BR').includes(query));
+  selectedAppList.replaceChildren();
+  installedAppList.replaceChildren();
+  if (!selected.length) {
+    const empty = document.createElement('div');
+    empty.className = 'app-empty';
+    empty.textContent = 'Nenhum aplicativo selecionado.';
+    selectedAppList.append(empty);
+  }
+  selected.forEach(item => selectedAppList.append(createAppItem(item, true)));
+  if (!installed.length) {
+    const empty = document.createElement('div');
+    empty.className = 'app-empty';
+    empty.textContent = query ? 'Nenhum aplicativo encontrado.' : 'Nenhum outro aplicativo detectado.';
+    installedAppList.append(empty);
+  }
+  installed.forEach(item => installedAppList.append(createAppItem(item, false)));
 }
 
 async function loadApps(savedSelection) {
   selectedPaths = new Set((savedSelection || []).map(item => item.path.toLowerCase()));
+  const selectionCountBeforeRiskFilter = selectedPaths.size;
   availableApps = await window.ghostRoute.listApps();
-  renderAppList();
+  const blockedPaths = new Set(availableApps.filter(item => item.risk?.level === 'blocked').map(item => item.path.toLowerCase()));
+  selectedPaths = new Set([...selectedPaths].filter(itemPath => !blockedPaths.has(itemPath)));
+  renderAppLists();
   updateSelectedCount();
+  if (selectedPaths.size !== selectionCountBeforeRiskFilter) await window.ghostRoute.saveSelectedApps(selectedApps());
 }
 
 function renderIdentity(identity) {
@@ -280,15 +331,28 @@ diagnosticsButton.addEventListener('click', async () => {
   }
 });
 
-appSearch.addEventListener('input', renderAppList);
+appSearch.addEventListener('input', renderAppLists);
+
+refreshAppsButton.addEventListener('click', async () => {
+  refreshAppsButton.disabled = true;
+  try { await loadApps(selectedApps()); }
+  finally { refreshAppsButton.disabled = false; }
+});
 
 addManualAppButton.addEventListener('click', async () => {
   const item = await window.ghostRoute.addManualApp();
   if (!item) return;
+  item.risk = item.risk || { level: 'none', label: '' };
+  item.running = false;
   if (!availableApps.some(existing => existing.path.toLowerCase() === item.path.toLowerCase())) availableApps.push(item);
-  selectedPaths.add(item.path.toLowerCase());
   availableApps.sort((left, right) => left.name.localeCompare(right.name, 'pt-BR'));
-  renderAppList();
+  if (item.risk.level === 'blocked') {
+    renderAppLists();
+    setSelectiveState('error', `${item.name} foi identificado como anticheat e não pode ser selecionado.`);
+    return;
+  }
+  selectedPaths.add(item.path.toLowerCase());
+  renderAppLists();
   updateSelectedCount();
   await window.ghostRoute.saveSelectedApps(selectedApps());
 });
@@ -330,14 +394,25 @@ activateIdentityButton.addEventListener('click', async () => {
 });
 
 startSelectiveButton.addEventListener('click', async () => {
+  const chosen = selectedApps();
+  const opened = chosen.filter(item => item.running);
+  if (opened.length) {
+    setSelectiveState('error', `Feche antes de conectar: ${opened.map(item => item.name).join(', ')}.`);
+    return;
+  }
+  const warned = chosen.filter(item => item.risk?.level === 'warning');
+  if (warned.length && !window.confirm(`Atenção: ${warned.map(item => item.name).join(', ')} pode ser jogo ou launcher. O GhostRoute não garante compatibilidade com anticheats. Deseja continuar?`)) return;
   selectiveBusy = true;
-  setSelectiveState('starting', 'Configurando o túnel e abrindo os aplicativos selecionados…');
+  setSelectiveState('starting', launchAppsToggle.checked ? 'Configurando o túnel e abrindo os aplicativos selecionados…' : 'Configurando o túnel. Abra os aplicativos depois da conexão…');
   try {
     const result = await window.ghostRoute.startSelective({
-      apps: selectedApps(),
-      fullTunnelConfigPath: configField.value
+      apps: chosen,
+      fullTunnelConfigPath: configField.value,
+      launchApps: launchAppsToggle.checked
     });
-    setSelectiveState('running', `${result.appCount} aplicativo(s) iniciado(s) pelo túnel via servidor ${result.serverIp}.`);
+    setSelectiveState('running', result.launchedCount
+      ? `${result.launchedCount} aplicativo(s) iniciado(s) pelo túnel via servidor ${result.serverIp}.`
+      : `Túnel ativo para ${result.appCount} aplicativo(s). Abra-os agora para usar a rota privada.`);
   } catch (error) {
     setSelectiveState('error', cleanErrorMessage(error));
   } finally {
