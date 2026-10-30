@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Configurações WireGuard contêm chaves privadas.
+wireguard/
+*.conf
+*.conf.dpapi

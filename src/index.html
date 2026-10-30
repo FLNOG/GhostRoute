@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+    <title>GhostRoute</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <img class="brand-logo" src="assets/ghostroute-wordmark.png" alt="GhostRoute">
+        <div class="brand-copy"><p>Conexão WireGuard segura para seus aplicativos.</p></div>
+        <span id="statusPill" class="pill disconnected">Desconectado</span>
+      </header>
+      <section class="hero">
+        <div>
+          <span class="eyebrow">WIREGUARD OFICIAL</span>
+          <h2>Conexão privada com controle simples.</h2>
+          <p>Use a VPN completa pelo WireGuard oficial ou escolha aplicativos específicos para o túnel seletivo do WireSock.</p>
+        </div>
+        <div class="hero-mark" aria-hidden="true"><span></span><img src="assets/ghostroute-ghost.png" alt=""></div>
+      </section>
+      <section class="card selective-card">
+        <div class="card-title-row">
+          <div><span class="eyebrow">ROTEAMENTO POR APLICATIVO</span><h3>Aplicativos no túnel</h3></div>
+          <span id="selectivePill" class="mini-pill stopped">Parado</span>
+        </div>
+        <p class="card-copy">Escolha os aplicativos que usarão a VPS. O GhostRoute abre os selecionados com suporte a TCP e UDP; o restante do Windows permanece normal.</p>
+        <div class="app-toolbar">
+          <input id="appSearch" type="search" placeholder="Buscar aplicativo instalado">
+          <button id="addManualAppButton" class="secondary">Adicionar manualmente</button>
+        </div>
+        <div id="appList" class="app-list" aria-label="Aplicativos instalados"><div class="app-empty">Carregando aplicativos…</div></div>
+        <p id="selectedCount" class="hint">Nenhum aplicativo selecionado.</p>
+        <div class="selective-actions">
+          <span id="selectiveMessage">Feche os aplicativos selecionados antes de iniciar.</span>
+          <button id="startSelectiveButton" class="primary">Iniciar selecionados</button>
+          <button id="stopSelectiveButton" class="danger" hidden>Encerrar modo seletivo</button>
+        </div>
+        <p class="hint warning-text">Experimental: encaminha TCP e UDP somente dos aplicativos marcados. Não selecione jogos competitivos e mantenha anticheats fechados durante os testes.</p>
+      </section>
+      <section class="card identity-card">
+        <div class="card-title-row">
+          <div><span class="eyebrow">IDENTIDADE DO DISPOSITIVO</span><h3>Provisionamento individual</h3></div>
+          <span id="identityPill" class="mini-pill stopped">Não gerada</span>
+        </div>
+        <p class="card-copy">Gera uma chave exclusiva neste computador. A chave privada é protegida pelo Windows e nunca é copiada ou enviada.</p>
+        <div id="identityDetails" class="identity-details" hidden>
+          <div><span>Dispositivo</span><strong id="identityDevice">—</strong></div>
+          <div><span>Chave pública</span><code id="identityPublicKey">—</code></div>
+        </div>
+        <div id="identityActivation" class="identity-activation" hidden>
+          <input id="identityAddress" type="text" placeholder="Endereço atribuído, ex.: 10.77.0.3/32">
+          <button id="activateIdentityButton" class="primary">Ativar identidade</button>
+        </div>
+        <div class="identity-actions">
+          <span id="identityMessage">A identidade atual de teste continuará ativa até o cadastro desta nova chave na VPS.</span>
+          <button id="generateIdentityButton" class="secondary">Gerar solicitação</button>
+          <button id="copyIdentityButton" class="ghost" hidden>Copiar solicitação</button>
+        </div>
+      </section>
+      <section class="card">
+        <h3>Configuração de desenvolvimento</h3>
+        <label for="wireGuardConfig">Arquivo WireGuard local</label>
+        <div class="row">
+          <input id="wireGuardConfig" type="text" readonly placeholder="Selecione GhostRouteTest.conf">
+          <button id="selectButton" class="secondary">Selecionar</button>
+        </div>
+        <p class="hint">O GhostRoute referencia a cópia protegida por DPAPI no cofre oficial do WireGuard; a chave nunca é exibida.</p>
+      </section>
+      <section class="card metrics-card">
+        <div class="card-title-row"><h3>Estado real do túnel</h3><button id="refreshButton" class="ghost small">Atualizar</button></div>
+        <div class="metrics">
+          <div><span>Handshake</span><strong id="handshake">—</strong></div>
+          <div><span>Recebido</span><strong id="received">—</strong></div>
+          <div><span>Enviado</span><strong id="sent">—</strong></div>
+          <div><span>IP público</span><strong id="publicIp">—</strong></div>
+        </div>
+      </section>
+      <section class="card metrics-card">
+        <div class="card-title-row"><h3>Diagnóstico de rede</h3><button id="diagnosticsButton" class="ghost small">Executar testes</button></div>
+        <div class="metrics diagnostics-grid">
+          <div><span>DNS</span><strong id="dnsStatus">Não testado</strong></div>
+          <div><span>DNS por interface</span><strong id="dnsServers">—</strong></div>
+          <div><span>IPv6 público</span><strong id="ipv6Status">Não testado</strong></div>
+          <div><span>Última verificação</span><strong id="diagnosticsTime">—</strong></div>
+        </div>
+      </section>
+      <section class="actions">
+        <div id="message" role="status">Selecione a configuração WireGuard de teste.</div>
+        <button id="connectButton" class="primary" disabled>Conectar</button>
+        <button id="disconnectButton" class="danger" hidden>Desconectar</button>
+      </section>
+      <aside><strong>Fase de validação:</strong> enquanto estiver conectada, esta versão encaminhará todo o tráfego IPv4 selecionado pela configuração. Feche jogos competitivos e anticheats durante os primeiros testes.</aside>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>
