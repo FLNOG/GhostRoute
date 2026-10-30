@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/vpn/wireguard-controller.js && node --check src/vpn/network-diagnostics.js && node --check src/vpn/selective-controller.js && node --check src/vpn/installed-apps.js && node --check src/vpn/identity-manager.js && node --check src/vpn/operation-guard.js && node --check src/shutdown-controller.js && node --check src/tray-menu-state.js && node --check src/app-cleanup.js && node --check src/tests/ghost-route.test.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/vpn/wireguard-controller.js && node --check src/vpn/network-diagnostics.js && node --check src/vpn/selective-controller.js && node --check src/vpn/installed-apps.js && node --check src/vpn/identity-manager.js && node --check src/vpn/operation-guard.js && node --check src/vpn/app-model.js && node --check src/vpn/uwp-discovery.js && node --check src/shutdown-controller.js && node --check src/tray-menu-state.js && node --check src/app-cleanup.js && node --check src/catalog-utils.js && node --check src/catalog-shared.js && node --check src/tests/ghost-route.test.js",
     "test": "node --test src/tests/ghost-route.test.js"
   },
   "devDependencies": {

@@ -110,3 +110,22 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 #message.success { color: #68eeb5; }
 aside { padding: 16px 18px; border-left: 3px solid #a84cff; border-radius: 4px 10px 10px 4px; background: #25152f; color: #ccb8d8; font-size: 12px; line-height: 1.55; }
 @media (max-width: 660px) { .hero-mark { display: none; } .brand-logo { max-width: 52vw; } .brand-copy { display: none; } .grid, .metrics, .identity-details { grid-template-columns: 1fr; } .row, .actions, .app-toolbar, .identity-actions, .identity-activation { align-items: stretch; flex-direction: column; } .actions button { width: 100%; } }
+
+/* ── Filtros de aplicativo ────────────────────────────────────── */
+.app-filter-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+.filter-btn { padding: 4px 12px; font-size: 12px; font-weight: 600; border: 1px solid #4a2a68; border-radius: 999px; background: transparent; color: #a99bb8; cursor: pointer; transition: background .15s, color .15s; }
+.filter-btn:hover { background: #261640; color: #e0d2f4; }
+.filter-btn.active { background: #3c1a5e; color: #d8a7ff; border-color: #7a1fb8; }
+
+/* ── Badges de app ──────────────────────────────────────────── */
+.app-badge.store { background: #1c2e4a; color: #7ab9ff; }
+.app-badge.manual { background: #1e2a1a; color: #7adb8e; }
+.app-badge.experimental { background: #2d2410; color: #f0b040; }
+.app-badge.unavailable { background: #2e1a1a; color: #f08080; }
+.app-badge.launcher { background: #2a1f00; color: #d4a000; }
+.app-item.unavailable { opacity: .6; }
+.app-item.unsupported input[type=checkbox]:disabled { cursor: not-allowed; }
+.app-item.unsupported { opacity: .7; }
+.app-reason { display: block; color: #ff8495; font-size: 11px; margin-top: 2px; }
+.launcher-note { display: block; color: #d4a000; font-size: 11px; margin-top: 2px; }
+.choose-real-app { margin-top: 4px; font-size: 11px; padding: 3px 9px; }

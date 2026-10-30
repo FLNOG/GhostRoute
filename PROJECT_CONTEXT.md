@@ -1,6 +1,6 @@
 # GhostRoute — Contexto de continuidade
 
-Atualizado em: 30 de outubro de 2026 (revisão de segurança e testes automatizados)
+Atualizado em: 30 de outubro de 2026 (catálogo autoritativo, interface UWP/launchers, refatoração, correções críticas)
 
 Este documento permite que outra IA ou desenvolvedor continue o projeto sem depender do histórico da conversa. Leia este arquivo e o `README.md` antes de alterar o código.
 
@@ -176,17 +176,20 @@ src/renderer.js                     interface e estados
 src/index.html                      estrutura visual
 src/styles.css                      estilos
 src/vpn/selective-controller.js     WireSock, AllowedApps, serviços e processos
-src/vpn/installed-apps.js           descoberta de aplicativos
+src/vpn/installed-apps.js           descoberta de aplicativos desktop
 src/vpn/identity-manager.js         chaves, DPAPI e perfil temporário
 src/vpn/wireguard-controller.js      modo VPN completa legado
 src/vpn/network-diagnostics.js      DNS, IPv4 e IPv6
 src/vpn/operation-guard.js          trava de concorrência pura (sem I/O)
+src/vpn/app-model.js                modelo canônico de app (routeRule, migração, launcher, risco)
+src/vpn/uwp-discovery.js            descoberta de apps Microsoft Store/UWP
+src/catalog-utils.js                lógica pura de catálogo (testável sem Electron)
 src/shutdown-controller.js          coordenador idêmpotente de encerramento
 src/app-cleanup.js                  fábrica da função de cleanup com injetáveis
 src/tray-menu-state.js              lógica pura de estado do menu da bandeja
 src/assets/ghostroute-ghost.png      símbolo oficial; ícone da janela, hero e bandeja
 src/assets/ghostroute-wordmark.png   logotipo horizontal usado no cabeçalho
-src/tests/ghost-route.test.js       testes automatizados (72 casos, Node 18+)
+src/tests/ghost-route.test.js       testes automatizados (147 casos, Node 18+)
 ```
 
 ## Comandos de desenvolvimento
@@ -382,18 +385,30 @@ Correcões aplicadas após revisão detalhada:
 
 - A interface separa aplicativos **Selecionados** dos demais **Instalados**.
 - Uma consulta única a `Win32_Process` marca executáveis atualmente abertos; o botão
-  “Atualizar” refaz a descoberta e o estado dos processos.
+  "Atualizar" refaz a descoberta e o estado dos processos.
 - Itens adicionados manualmente preservam `source: "manual"` na configuração e podem
   ser removidos da lista.
 - Instaladores, desinstaladores, atualizadores e atalhos administrativos do Windows são
   filtrados de forma conservadora.
 - Anticheats conhecidos são bloqueados na seleção. Jogos e launchers conhecidos exibem
-  alerta e exigem confirmação do usuário; a lista é apenas uma proteção auxiliar e não
-  representa garantia de compatibilidade.
-- A opção “Abrir aplicativos automaticamente” pode ser desativada. Nesse modo, o túnel
-  é ativado sem criar processos; aplicativos abertos posteriormente não são encerrados
-  pelo GhostRoute ao desconectar.
-- Microsoft Store/UWP e tratamento avançado de launchers permanecem para a próxima etapa.
+  alerta; a lista é apenas uma proteção auxiliar.
+- A opção "Abrir aplicativos automaticamente" pode ser desativada.
+- **Segunda etapa — modelo canônico de app** (`src/vpn/app-model.js`):
+  - `routeRule` = regra para AllowedApps (nunca AUMID, nunca args, nunca processo compartilhado).
+  - `launchTarget` = como abrir (exe para desktop, AUMID para UWP).
+  - `launchArgs` = argumentos de abertura (nunca entram em AllowedApps).
+  - Processos compartilhados bloqueados: ApplicationFrameHost, RuntimeBroker, explorer,
+    WWAHost, ShellExperienceHost, msedgewebview2, e outros (ver SHARED_PROCESS_NAMES).
+  - Launchers detectados automaticamente: Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG.
+  - Configurações antigas `{ name, path }` migradas automaticamente por `migrateOldItem`.
+- **Descoberta UWP** (`src/vpn/uwp-discovery.js`):
+  - Usa `Get-AppxPackage` + `Get-AppxPackageManifest` via PowerShell.
+  - `compatibility: supported` = caminho acessível; `experimental` = só basename; `unsupported` = processo compartilhado.
+  - AUMID usado **somente** como `launchTarget` (lançamento via `shell:AppsFolder\\AUMID`).
+  - Processos UWP não são rastreados em `launchedProcesses` (não são mortos ao desconectar).
+  - **Limitação**: WireSock não documenta suporte a AUMID em AllowedApps; UWP experimental pode não rotear corretamente.
+- Argumentos de atalhos preservados como array (nunca entram em AllowedApps);
+  argumentos ambíguos (operadores shell, `$`) desativam abertura automática.
 7. Menu “Desconectar VPN”: evita cliques concorrentes, exibe erro sem silenciá-lo.
 8. `src/app-cleanup.js`: fábrica `createCleanupFn()` com dependências injetáveis para testes.
 9. **Correção crítica**: ShutdownController reescrito com máquina de 5 estados (`idle`→`cleaning`→`cleaned`→`quitting`→`done`).
@@ -401,4 +416,185 @@ Correcões aplicadas após revisão detalhada:
    - Se `quitFn` lançar: `state→cleaned`, Tray preservado, cleanup não se repete.
    - `destroyTrayFn` chamado APÓS `quitFn` (evita app invisvel e sem menu em falha).
 10. **Testes**: 82 casos, 0 falhas, ~145 ms (grupos A–F; grupo F é a máquina de estados).
+
+## Provisionamento automático — API planejada
+
+O fluxo atual ainda exige que o administrador cadastre a chave pública na VPS e que o
+usuário informe manualmente o endereço interno atribuído, por exemplo `10.77.0.4/32`.
+Isso é aceitável durante desenvolvimento, mas não será o fluxo do instalador definitivo.
+
+### Experiência desejada
+
+1. O administrador cria um convite de uso único e com validade.
+2. O usuário instala o GhostRoute e informa apenas o código/link de convite.
+3. O cliente gera a chave privada localmente e a protege com DPAPI.
+4. Somente a chave pública, ID e nome do dispositivo são enviados à API.
+5. A API valida e consome o convite, reserva atomicamente o próximo endereço livre,
+   cadastra o peer no WireGuard e devolve os parâmetros públicos necessários.
+6. O GhostRoute ativa a identidade automaticamente. A chave privada nunca sai do PC.
+
+### Primeira arquitetura proposta
+
+- API pequena em Node.js na VPS Oracle, executada como serviço dedicado.
+- SQLite para convites, dispositivos, endereços reservados, revogações e auditoria.
+- HTTPS obrigatório.
+- Convites inicialmente de uso único e um dispositivo por convite.
+- API pública mínima para enrollment e informações públicas da rede.
+- Administração inicialmente por CLI local/SSH, sem painel web exposto: criar convite,
+  listar dispositivos, revogar dispositivo e consultar endereços livres.
+- Endpoint próprio de IP público para substituir `api.ipify.org`.
+- A subnet e os dados públicos da rede devem vir do servidor, removendo o
+  `10.77.0.0/24` fixo do cliente.
+
+### Requisitos de segurança
+
+- Nunca receber, armazenar ou registrar chaves privadas.
+- Convites armazenados como hash, com expiração, consumo atômico e proteção contra replay.
+- Alocação de endereço e cadastro do peer sob transação/lock para impedir IP duplicado.
+- Validação estrita de chaves públicas, IDs e nomes; limites de tamanho e rate limiting.
+- Integração com `wg` por helper/argumentos estruturados, sem concatenar shell input.
+- Privilégio mínimo: processo HTTP sem root e componente privilegiado restrito para peers.
+- Logs sem segredos, backups do banco e revogação idempotente.
+- Endpoints administrativos não devem ficar publicamente expostos sem autenticação forte.
+
+### Endpoints conceituais
+
+- `POST /v1/enroll` — consome convite e cadastra a chave pública do dispositivo.
+- `GET /v1/network-info` — devolve parâmetros públicos e versão do protocolo.
+- `GET /v1/ip` — devolve o IP público observado pelo servidor.
+- Convites e dispositivos ficam inicialmente na CLI administrativa, não na API pública.
+
+### Ordem de implementação
+
+1. Concluir e estabilizar a lista de aplicativos/UWP.
+2. Definir protocolo, ameaças, estados e esquema SQLite.
+3. Implementar API localmente com executor WireGuard simulado.
+4. Testar concorrência, convites, reinstalação, idempotência e revogação.
+5. Instalar a API na VPS com HTTPS e serviço supervisionado.
+6. Integrar enrollment automático ao GhostRoute.
+7. Ocultar a ativação manual em uma área avançada/de recuperação.
+8. Somente depois produzir o instalador definitivo para os amigos.
+
+## IP dinâmico, NAT e CGNAT dos clientes
+
+- O computador do amigo **não precisa ter IP público fixo**. O WireGuard identifica o peer
+  pela chave e aprende o endpoint externo mais recente a partir de pacotes autenticados
+  (roaming entre IPs e redes).
+- O endereço `10.77.0.x/32` é interno e estável no túnel; não é o IP público da internet.
+- Como o cliente inicia UDP de saída para a VPS, normalmente não é necessário encaminhar
+  portas no roteador do amigo, inclusive em redes com NAT/CGNAT.
+- Trocar de Wi-Fi, reiniciar o modem ou receber outro IP público normalmente só exige novo
+  handshake; o peer não precisa ser recadastrado.
+- Para NAT/firewall que expira o mapeamento UDP, pode-se usar `PersistentKeepalive = 25`,
+  conforme orientação prática do WireGuard quando é necessário manter o mapeamento ativo.
+- Redes que bloqueiam UDP, portais cativos ou firewalls corporativos ainda podem impedir a
+  conexão. O diagnóstico deve informar isso sem prometer funcionamento em toda rede.
+
+## Arquitetura preferida do instalador final — componentes incorporados
+
+Decisão de produto: para a versão final, a preferência é que o usuário instale e enxergue
+apenas o **GhostRoute**, sem precisar operar interfaces separadas do WireGuard ou WireSock.
+Isso corresponde à integração por SDK/serviço, e não a esconder ou renomear instalações de
+terceiros.
+
+### Arquitetura-alvo
+
+```text
+GhostRoute
+├── Interface Electron sem privilégios administrativos permanentes
+├── Serviço/helper GhostRoute privilegiado e de escopo mínimo
+├── mecanismo seletivo WireSock SDK / wgbooster
+├── componente WireGuard incorporável, se ainda necessário
+└── drivers e serviços de rede assinados exigidos pelos mecanismos
+```
+
+Objetivos:
+
+- um único instalador e uma única experiência de produto;
+- apenas a interface do GhostRoute para conectar, desconectar, reparar e atualizar;
+- drivers/serviços instalados com consentimento e UAC, mas sem exigir que o usuário abra
+  aplicativos WireGuard ou WireSock separados;
+- atualizações, diagnóstico e recuperação coordenados pelo GhostRoute;
+- processo Electron comum sem privilégio; operações sensíveis ficam em helper restrito;
+- preservar a capacidade de desligar VPN, serviços e processos iniciados pelo GhostRoute;
+- não descarregar drivers de forma insegura durante uso normal;
+- assinatura de código, verificação de integridade e rollback no instalador.
+
+### WireGuard
+
+O projeto oficial oferece `embeddable-dll-service` para aplicações Windows e recomenda essa
+abordagem em vez de integrar WireGuardNT diretamente. Deve-se avaliar se o SDK WireSock já
+cobre todos os modos necessários; se cobrir, o aplicativo oficial do WireGuard poderá deixar
+de ser uma dependência de runtime. Geração de chaves também poderá ser interna, sem executar
+`wg.exe`, desde que use implementação auditada e armazenamento DPAPI existente.
+
+### WireSock
+
+O WireSock Core SDK expõe o mecanismo `wgbooster`, drivers e APIs de ciclo de vida para uma
+interface própria. Essa é a integração desejada para roteamento seletivo. Antes de embutir ou
+redistribuir qualquer componente, é obrigatório obter confirmação escrita sobre:
+
+- direito de redistribuição não comercial entre amigos;
+- condições para uma futura distribuição pública/comercial;
+- uso de drivers, DLLs, CLI/service wrapper e atualizações;
+- marca, avisos de licença, telemetria e quantidade de dispositivos;
+- necessidade de contrato OEM/Pro e respectivos custos.
+
+Os termos publicados atualmente indicam que produção/redistribuição OEM comercial requer
+acordo próprio. Não presumir autorização com base apenas no download gratuito.
+
+### Estratégia de transição
+
+1. Durante desenvolvimento, manter WireGuard/WireSock instalados separadamente e detectados
+   pelo GhostRoute.
+2. Criar uma abstração de engine para que controllers não dependam diretamente de caminhos
+   fixos de executáveis.
+3. Consultar formalmente o WireSock sobre licença de redistribuição/SDK.
+4. Construir protótipo não distribuído com SDK e helper privilegiado.
+5. Validar instalação, atualização, reparo, rollback e desinstalação em máquina limpa.
+6. Migrar geração de chaves e túnel completo para componentes incorporados quando seguro.
+7. Remover dependências separadas somente depois de equivalência funcional e licença válida.
+
+## Rodada corretiva final — 30 out 2026
+
+Correções aplicadas nesta sessão:
+
+1. **`apps:remove-manual` (`src/main.js`)** — handler retornava `true` em ambos os casos e deletava do `appCatalog` mesmo para itens não-manuais. Corrigido:
+   - Item não-manual: retorna `{ removed: false }` sem modificar config nem catálogo.
+   - Item manual: salva config antes de remover do catálogo; retorna `{ removed: true }`.
+
+2. **Botão "Remover" (`src/renderer.js`)** — não verificava `result.removed` antes de atualizar a UI. Corrigido para checar `result && result.removed === true`.
+
+3. **Botão "Remover da seleção" (`src/renderer.js`)** — mutava `selectedIds` antes de persistir (sem rollback real). Substituído por `GhostRouteCatalog.removeFromSelectionWithRollback()` de `catalog-shared.js`, que:
+   - Nunca muta o Set original.
+   - Persiste primeiro, depois aplica a remoção.
+   - Em falha retorna `{ committed: false, ids: prevSet, error }` e a UI restaura o estado.
+
+4. **`package.json`** — adicionado `node --check src/catalog-shared.js` ao script `check`.
+
+5. **Testes K1, K3, J9 (`src/tests/ghost-route.test.js`)** — estavam validando arquitetura obsoleta (contextBridge para `canonicalId` e `appMatchesFilter`). Corrigidos para refletir a arquitetura real:
+   - K1: verifica que `preload.js` NÃO contém `require` local (sandbox:true).
+   - K3: verifica que `renderer.js` usa `GhostRouteCatalog.canonicalId` (script tag).
+   - J9: verifica que `renderer.js` usa `GhostRouteCatalog.appMatchesFilter` (script tag).
+
+6. **Teste K8 (`src/tests/ghost-route.test.js`)** — reimplementava a lógica de rollback dentro do teste. Reescrito para usar a função real `removeFromSelectionWithRollback` de `catalog-shared.js`.
+
+**Resultado:** 200 testes passando, 0 falhas, 0 vulnerabilidades (npm audit), `npm run check` OK.
+
+### Arquitetura de compartilhamento de funções puras (resumo)
+
+| Local | Forma de acesso |
+|---|---|
+| `src/catalog-shared.js` | Módulo UMD: em Node → `module.exports`; no browser → `globalThis.GhostRouteCatalog` |
+| `src/catalog-utils.js` | `require('./catalog-shared')` + lógica adicional Node |
+| `src/renderer.js` | `GhostRouteCatalog.*` (carregado via `<script src="catalog-shared.js">`) |
+| `src/preload.js` | Somente `require('electron')` — sandbox:true impede require local |
+| Testes | `require('../catalog-shared')` ou `require('../catalog-utils')` |
+
+### Funções exportadas por catalog-shared.js
+
+- `isValidId(id)` — valida string de ID
+- `canonicalId(item)` — ID canônico normalizado
+- `appMatchesFilter(item, filter, query)` — filtro de lista de apps
+- `removeFromSelectionWithRollback(currentIds, idToRemove, saveFn)` — remoção com rollback
 

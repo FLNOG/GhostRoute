@@ -2,6 +2,7 @@ const { execFile, spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createOperationGuard } = require('./operation-guard');
+const { validateRouteRule } = require('./app-model');
 
 const SERVER_IP = '193.122.219.14';
 const WIRESOCK_CLI = 'C:\\Program Files\\WireSock Secure Connect\\command-line\\wiresock-connect-cli.exe';
@@ -65,19 +66,64 @@ function routingRule(executablePath) {
 function normalizeApps(apps) {
   if (!Array.isArray(apps) || apps.length === 0) throw new Error('Selecione pelo menos um aplicativo para o túnel.');
   const seen = new Set();
-  return apps.map(item => {
-    const executable = String(item?.name || '').toLowerCase() === 'discord'
-      ? resolveDiscordExecutable(String(item.path))
-      : String(item?.path || '');
-    if (executable.includes(',')) {
-      throw new Error(`${String(item?.name || path.basename(executable))} não pode ser usado porque o caminho contém vírgula.`);
+  const result = apps.map(item => {
+    // Pular itens incompatíveis
+    if (item?.compatibility === 'unsupported') return null;
+
+    const isDiscord = String(item?.name || '').toLowerCase() === 'discord' && item?.kind !== 'uwp';
+
+    // Determinar a regra de roteamento
+    let routeRuleSource;
+    if (item?.routeRule) {
+      routeRuleSource = String(item.routeRule);
+    } else {
+      routeRuleSource = isDiscord
+        ? resolveDiscordExecutable(String(item?.launchTarget || item?.path || ''))
+        : String(item?.launchTarget || item?.path || '');
     }
-    validateFile(executable, '.exe', `Aplicativo ${String(item?.name || '').trim() || 'selecionado'}`);
-    const key = executable.toLowerCase();
+    if (!routeRuleSource) return null;
+
+    // Discord: regra de diretório para path versionado
+    const finalRuleUnvalidated = isDiscord ? routingRule(routeRuleSource) : routeRuleSource;
+
+    // Verificação explícita de vírgula: gera erro descritivo antes de validateRouteRule
+    if (finalRuleUnvalidated?.includes(',')) {
+      throw new Error(`${String(item?.name || path.basename(String(finalRuleUnvalidated)))} não pode ser usado porque o caminho contém vírgula.`);
+    }
+
+    // DEFESA OBRIGATÓRIA: sempre valida via validateRouteRule()
+    // Rejeita: AUMID, processos compartilhados, System32, vírgula, CR/LF, etc.
+    const finalRule = validateRouteRule(finalRuleUnvalidated);
+    if (!finalRule) return null;
+
+    // Para desktop: valida que o EXECUTÁVEL existe (não a routeRule, que pode ser diretório)
+    const launchExe = item?.launchTarget || item?.path;
+    if (item?.kind !== 'uwp' && launchExe && path.isAbsolute(launchExe)) {
+      try { validateFile(launchExe, '.exe', `Aplicativo ${String(item?.name || '').trim() || 'selecionado'}`); }
+      catch { return null; }
+    }
+
+    const key = finalRule.toLowerCase();
     if (seen.has(key)) return null;
     seen.add(key);
-    return { name: String(item?.name || path.basename(executable, '.exe')), path: executable };
+
+    return {
+      name:              String(item?.name || path.basename(finalRule, '.exe')),
+      routeRule:         finalRule,
+      path:              item?.path || item?.launchTarget || finalRule,
+      launchTarget:      item?.launchTarget || item?.path || finalRule,
+      launchArgs:        Array.isArray(item?.launchArgs) ? item.launchArgs : [],
+      workingDirectory:  item?.workingDirectory || '',
+      launchArgsAmbiguous: Boolean(item?.launchArgsAmbiguous),
+      kind:              item?.kind || 'desktop',
+    };
   }).filter(Boolean);
+
+  // PROTEÇÃO OBRIGATÓRIA: AllowedApps vazio nunca deve ser escrito
+  if (result.length === 0) {
+    throw new Error('Nenhum aplicativo compatível possui uma regra de roteamento segura.');
+  }
+  return result;
 }
 
 function buildWireSockConfig(sourceConfigPath, apps, runtimeDirectory) {
@@ -87,7 +133,7 @@ function buildWireSockConfig(sourceConfigPath, apps, runtimeDirectory) {
     throw new Error('A configuração não contém as seções [Interface] e [Peer].');
   }
 
-  const rules = normalizeApps(apps).map(item => routingRule(item.path));
+  const rules = normalizeApps(apps).map(item => item.routeRule);
   const lines = original.replace(/\r\n/g, '\n').split('\n');
   const output = [];
   let section = '';
@@ -223,25 +269,32 @@ function runElevatedWireSock(steps, serviceAction = '') {
 
 /**
  * Inicia um processo de forma segura, confirmando via evento 'spawn'.
+ * Usa launchTarget (não path), launchArgs como array, workingDirectory validado.
+ * shell: false garantido — nunca concatena command line.
  *
- * Garante que:
- *  - O listener de 'error' é registrado imediatamente após spawn() retornar.
- *  - A Promise resolve somente após o SO confirmar 'spawn'.
- *  - 'error' antes de 'spawn' rejeita a Promise sem unhandled rejection.
- *  - Listeners temporários são removidos após o desfecho.
- *  - Após 'spawn', um listener permanente captura erros tardios via stop().
- *
- * @param {{ path: string, name: string }} appDef
- * @param {Function|null} [_spawnFn]  Substitui spawn() para testes.
+ * @param {{ launchTarget: string, name: string, launchArgs?: string[], workingDirectory?: string }} appDef
+ * @param {Function|null} [_spawnFn]
  * @returns {Promise<ChildProcess>}
  */
 function spawnAndConfirm(appDef, _spawnFn = null) {
   const spawnFn = _spawnFn || spawn;
-  const { path: execPath, name: appName } = appDef;
+  // Usa launchTarget (caminho canônico) em vez de path
+  const execPath = appDef.launchTarget || appDef.path;
+  const appName  = appDef.name;
+  const launchArgs = Array.isArray(appDef.launchArgs) ? appDef.launchArgs : [];
+
+  // workingDirectory: valida existência; fallback ao dirname do executável
+  let cwd = path.dirname(execPath);
+  if (appDef.workingDirectory) {
+    const wd = String(appDef.workingDirectory);
+    if (path.isAbsolute(wd)) {
+      try { if (fs.existsSync(wd)) cwd = wd; } catch {}
+    }
+  }
 
   return new Promise((resolve, reject) => {
-    const child = spawnFn(execPath, [], {
-      cwd: path.dirname(execPath), windowsHide: false, detached: false, stdio: 'ignore'
+    const child = spawnFn(execPath, launchArgs, {
+      cwd, shell: false, windowsHide: false, detached: false, stdio: 'ignore'
     });
 
     let settled = false;
@@ -257,8 +310,6 @@ function spawnAndConfirm(appDef, _spawnFn = null) {
       if (settled) return;
       settled = true;
       child.removeListener('error', onError);
-      // Listener permanente: captura erros de runtime após confirmação do spawn.
-      // stop() usa .catch(() => {}) para suprimir rejeições não tratadas.
       child.once('error', postErr => {
         requestStop(`${appName} não pôde ser iniciado: ${postErr.message}`);
       });
@@ -270,11 +321,46 @@ function spawnAndConfirm(appDef, _spawnFn = null) {
   });
 }
 
-async function launchSelectedApps(selectedApps, launchApps, _spawnAndConfirmFn = spawnAndConfirm) {
+/**
+ * Inicia um app UWP via explorer.exe (shell:AppsFolder).
+ * Não usa PowerShell. Não rastreia o processo iniciado.
+ * @param {{ name: string, launchTarget: string }} appDef
+ * @param {Function|null} [_spawnFn]  Injetável para testes.
+ */
+function launchUwpApp(appDef, _spawnFn = null) {
+  const aumid = String(appDef.launchTarget || '');
+  if (!/^[A-Za-z0-9._-]+_[A-Za-z0-9]+![A-Za-z0-9._-]+$/.test(aumid)) {
+    return Promise.reject(new Error(`AUMID inválido para ${appDef.name}: abertura automática não suportada.`));
+  }
+  const spawnFn = _spawnFn || spawn;
+  return new Promise((resolve, reject) => {
+    // explorer.exe com shell:AppsFolder não é rastreado pelo GhostRoute
+    const child = spawnFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], {
+      shell: false, detached: true, stdio: 'ignore'
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref(); // explorer não é rastreado como processo do app
+      resolve();
+    });
+  });
+}
+
+async function launchSelectedApps(selectedApps, launchApps, _spawnAndConfirmFn = spawnAndConfirm, _launchUwpFn = launchUwpApp) {
   const startedProcesses = [];
   if (!launchApps) return startedProcesses;
   for (const selectedApp of selectedApps) {
-    startedProcesses.push(await _spawnAndConfirmFn(selectedApp));
+    if (selectedApp.kind === 'uwp') {
+      // UWP: abre via AUMID + explorer.exe; não rastreia
+      await _launchUwpFn(selectedApp);
+      // Intencionalmente sem push em startedProcesses
+    } else if (selectedApp.launchArgsAmbiguous) {
+      // Args ambíguos: não abre automaticamente (túnel é ativado, abertura manual)
+      // Sem erro — o túnel já está ativo; usuário deve abrir o app manualmente
+      continue;
+    } else {
+      startedProcesses.push(await _spawnAndConfirmFn(selectedApp));
+    }
   }
   return startedProcesses;
 }
@@ -425,7 +511,9 @@ async function start({ sourceConfigPath, apps, runtimeDirectory, launchApps = tr
     const selectedApps = normalizeApps(apps);
     const running = [];
     for (const selectedApp of selectedApps) {
-      if (await isExecutableRunning(selectedApp.path)) running.push(selectedApp.name);
+      if (selectedApp.kind === 'uwp') continue; // processos UWP não são verificados
+      const execPath = selectedApp.launchTarget || selectedApp.path;
+      if (execPath && await isExecutableRunning(execPath)) running.push(selectedApp.name);
     }
     if (running.length) {
       throw new Error(`Feche completamente antes de iniciar: ${running.join(', ')}.`);
@@ -447,6 +535,12 @@ async function start({ sourceConfigPath, apps, runtimeDirectory, launchApps = tr
     // Somente processos confirmados são inseridos em startedProcesses.
     startedProcesses.push(...await launchSelectedApps(selectedApps, launchApps));
 
+    // Computa contadores de abertura
+    const ambiguousCount = launchApps
+      ? selectedApps.filter(a => a.launchArgsAmbiguous && a.kind !== 'uwp').length : 0;
+    const uwpLaunchCount = launchApps
+      ? selectedApps.filter(a => a.kind === 'uwp').length : 0;
+
     // Só comita o estado depois que todos os spawns foram confirmados.
     selectiveActive = true;
     launchedProcesses = startedProcesses;
@@ -457,6 +551,8 @@ async function start({ sourceConfigPath, apps, runtimeDirectory, launchApps = tr
       serverIp: SERVER_IP,
       appCount: selectedApps.length,
       launchedCount: startedProcesses.length,
+      manualLaunchCount: ambiguousCount,
+      uwpLaunchCount,
       engine: 'WireSock Secure Connect'
     };
     // Falha de notificação (ex.: BrowserWindow já destruída) é não-fatal:
@@ -518,10 +614,11 @@ module.exports = {
   start,
   status,
   stop,
-  _stop: stop,              // alias para testes com dependências injetadas
+  _stop: stop,
   _cleanupSelectiveSession: cleanupSelectiveSession,
   _spawnAndConfirm: spawnAndConfirm,
   _launchSelectedApps: launchSelectedApps,
+  _launchUwpApp: launchUwpApp,
   _requestStop: requestStop,
   _processPendingCleanup,
   _getTestState,

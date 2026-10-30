@@ -1,18 +1,34 @@
-const { execFile } = require('node:child_process');
-const fs = require('node:fs');
-const path = require('node:path');
+'use strict';
 
+const { execFile } = require('node:child_process');
+const fs   = require('node:fs');
+const path = require('node:path');
+const {
+  detectLauncher, parseWindowsArgs, validateRouteRule, classifyRisk: classifyRiskModel,
+} = require('./app-model');
+
+// ── Script de descoberta de atalhos ───────────────────────────────────────
+// Captura TargetPath, Arguments e WorkingDirectory, além de filtrar
+// atalhos que apontam para interpretadores de shell.
 const DISCOVERY_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $shell = New-Object -ComObject WScript.Shell
+$shellInterps = @('cmd','powershell','pwsh','wscript','cscript','mshta','rundll32','regsvr32','msiexec','bash','sh','wmic','forfiles')
 $roots = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 $items = foreach ($root in $roots) {
   Get-ChildItem -LiteralPath $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
     try {
       $shortcut = $shell.CreateShortcut($_.FullName)
       $target = [Environment]::ExpandEnvironmentVariables($shortcut.TargetPath)
-      if ($target -and [IO.Path]::GetExtension($target) -ieq '.exe' -and (Test-Path -LiteralPath $target)) {
-        [pscustomobject]@{ name = $_.BaseName; path = $target }
+      if (-not $target -or [IO.Path]::GetExtension($target) -ine '.exe') { return }
+      if (-not (Test-Path -LiteralPath $target)) { return }
+      $base = [IO.Path]::GetFileNameWithoutExtension($target).ToLower()
+      if ($shellInterps -contains $base) { return }
+      [pscustomobject]@{
+        name             = $_.BaseName
+        path             = $target
+        arguments        = $shortcut.Arguments
+        workingDirectory = $shortcut.WorkingDirectory
       }
     } catch {}
   }
@@ -32,31 +48,24 @@ function runPowerShell(script) {
   });
 }
 
-function normalizeItem(item) {
-  const executablePath = String(item?.path || '');
-  const name = String(item?.name || path.basename(executablePath, '.exe')).trim();
-  if (!name || !path.isAbsolute(executablePath) || path.extname(executablePath).toLowerCase() !== '.exe') return null;
-  if (!fs.existsSync(executablePath)) return null;
-  const source = item?.source === 'manual' ? 'manual' : 'installed';
-  return { id: executablePath.toLowerCase(), name, path: executablePath, source };
-}
+// ── Filtros e classificação ────────────────────────────────────────────────
 
 const EXCLUDED_APP_PATTERNS = [
   /(?:^|\b)uninst(?:all|aller)?(?:\b|\d)/i,
   /(?:^|\b)(?:setup|installer|repair|modify)(?:\b|\d)/i,
-  /(?:^|\b)(?:update|updater)(?:\b|\d)/i
+  /(?:^|\b)(?:update|updater)(?:\b|\d)/i,
 ];
 
 const ANTICHEAT_PATTERNS = [
   /faceit/i, /easyanticheat|easy anti.?cheat/i, /battleye|battlEye/i,
   /vgc(?:\.exe)?$|vgtray|vanguard/i, /ricochet/i, /xigncode/i,
-  /punkbuster|pbsvc|pbsetup/i, /nprotect|gameguard/i
+  /punkbuster|pbsvc|pbsetup/i, /nprotect|gameguard/i,
 ];
 
 const GAME_AND_LAUNCHER_PATTERNS = [
   /steam|epic games|epicgameslauncher|riot client|riotclient|battle\.net|battlenet/i,
   /ubisoft|uplay|ea app|eadesktop|origin|rockstar|gog galaxy/i,
-  /counter.?strike|valorant|fortnite|league of legends|rainbow six|apex legends|pubg/i
+  /counter.?strike|valorant|fortnite|league of legends|rainbow six|apex legends|pubg/i,
 ];
 
 function isExcludedApp(item) {
@@ -69,14 +78,49 @@ function isExcludedApp(item) {
 
 function classifyAppRisk(item) {
   const combined = `${String(item?.name || '')} ${String(item?.path || '')}`;
-  if (ANTICHEAT_PATTERNS.some(pattern => pattern.test(combined))) {
+  if (ANTICHEAT_PATTERNS.some(p => p.test(combined))) {
     return { level: 'blocked', label: 'Anticheat não compatível' };
   }
-  if (GAME_AND_LAUNCHER_PATTERNS.some(pattern => pattern.test(combined))) {
+  if (GAME_AND_LAUNCHER_PATTERNS.some(p => p.test(combined))) {
     return { level: 'warning', label: 'Jogo ou launcher: use com cautela' };
   }
   return { level: 'none', label: '' };
 }
+
+// ── normalizeItem ─────────────────────────────────────────────────────────
+
+/**
+ * Normaliza um item de aplicativo para o formato canônico.
+ * Suporta tanto o modelo antigo { name, path } quanto o novo modelo completo.
+ * Retorna null para itens inválidos.
+ */
+function normalizeItem(item) {
+  if (!item) return null;
+
+  // Novo modelo UWP: validação mínima e pass-through
+  if (item.kind === 'uwp') {
+    if (!item.appUserModelId || !item.name) return null;
+    return item;
+  }
+
+  const executablePath = String(item?.path || '');
+  const name = String(item?.name || path.basename(executablePath, '.exe')).trim();
+  if (!name || !path.isAbsolute(executablePath) || path.extname(executablePath).toLowerCase() !== '.exe') return null;
+  if (!fs.existsSync(executablePath)) return null;
+
+  const source = item?.source === 'manual' ? 'manual' : 'installed';
+  const id = executablePath.toLowerCase();
+
+  // Já tem novo modelo (routeRule presente): preservar campos extras
+  if (item?.routeRule) {
+    return { ...item, id, name, path: executablePath, source };
+  }
+
+  // Modelo antigo: retornar formato mínimo compatível
+  return { id, name, path: executablePath, source };
+}
+
+// ── Processos em execução ─────────────────────────────────────────────────
 
 async function runningExecutablePaths() {
   const script = `
@@ -96,6 +140,8 @@ Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
   }
 }
 
+// ── Discord ────────────────────────────────────────────────────────────────
+
 function findDiscordExecutable() {
   const root = path.join(process.env.LOCALAPPDATA || '', 'Discord');
   if (!fs.existsSync(root)) return '';
@@ -107,6 +153,8 @@ function findDiscordExecutable() {
   const rootExecutable = path.join(root, 'Discord.exe');
   return candidates[0] || (fs.existsSync(rootExecutable) ? rootExecutable : '');
 }
+
+// ── Descoberta principal ───────────────────────────────────────────────────
 
 async function discoverInstalledApps() {
   let parsed = [];
@@ -125,11 +173,49 @@ async function discoverInstalledApps() {
   }
 
   const seen = new Set();
-  return parsed.map(item => normalizeItem({ ...item, source: 'installed' })).filter(item => {
-    if (!item || isExcludedApp(item) || seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  }).sort((left, right) => left.name.localeCompare(right.name, 'pt-BR'));
+  return parsed.map(raw => {
+    // Build normalized item with new model fields
+    const normalBase = normalizeItem({ ...raw, source: 'installed' });
+    if (!normalBase || isExcludedApp(normalBase) || seen.has(normalBase.id)) return null;
+    seen.add(normalBase.id);
+
+    const risk = classifyAppRisk(normalBase);
+    const { isLauncher, launcherNote } = detectLauncher(normalBase.name, normalBase.path);
+    const routeRule = validateRouteRule(normalBase.path);
+
+    // Arguments from shortcut (desktop only)
+    const rawArgs = String(raw.arguments || '').trim();
+    const rawWd   = String(raw.workingDirectory || '').trim();
+    let launchArgs = [];
+    let launchArgsAmbiguous = false;
+    if (rawArgs) {
+      const parsed = parseWindowsArgs(rawArgs);
+      if (parsed === null) { launchArgsAmbiguous = true; }
+      else { launchArgs = parsed; }
+    }
+
+    // workingDirectory: preservar somente se absoluto (validado ao usar)
+    const workingDirectory = (rawWd && path.isAbsolute(rawWd)) ? rawWd : '';
+
+    return {
+      ...normalBase,
+      kind: 'desktop',
+      source: 'installed',
+      routeRule: routeRule || normalBase.path,
+      launchTarget: normalBase.path,
+      launchArgs,
+      launchArgsAmbiguous: launchArgsAmbiguous || false,
+      workingDirectory,
+      packageFamilyName: '',
+      appUserModelId: '',
+      installRoot: '',
+      running: false,
+      risk,
+      compatibility: routeRule ? 'supported' : 'unsupported',
+      isLauncher,
+      launcherNote,
+    };
+  }).filter(Boolean).sort((left, right) => left.name.localeCompare(right.name, 'pt-BR'));
 }
 
 module.exports = {
@@ -138,5 +224,5 @@ module.exports = {
   findDiscordExecutable,
   isExcludedApp,
   normalizeItem,
-  runningExecutablePaths
+  runningExecutablePaths,
 };

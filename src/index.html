@@ -33,6 +33,14 @@
           <button id="refreshAppsButton" class="ghost" title="Atualizar aplicativos e processos abertos">Atualizar</button>
           <button id="addManualAppButton" class="secondary">Adicionar manualmente</button>
         </div>
+        <div class="app-filter-row" role="group" aria-label="Filtros de aplicativo">
+          <button class="filter-btn active" data-filter="all">Todos</button>
+          <button class="filter-btn" data-filter="desktop">Desktop</button>
+          <button class="filter-btn" data-filter="store">Microsoft Store</button>
+          <button class="filter-btn" data-filter="manual">Manuais</button>
+          <button class="filter-btn" data-filter="compatible">Compatíveis</button>
+          <button class="filter-btn" data-filter="incompatible">Não compatíveis</button>
+        </div>
         <div class="app-section-heading"><span>Selecionados</span><small id="selectedCount">Nenhum selecionado</small></div>
         <div id="selectedAppList" class="app-list selected-list" aria-label="Aplicativos selecionados"><div class="app-empty">Nenhum aplicativo selecionado.</div></div>
         <div class="app-section-heading"><span>Aplicativos instalados</span><small>Escolha quais usarão o túnel</small></div>
@@ -102,6 +110,7 @@
       </section>
       <aside><strong>Fase de validação:</strong> enquanto estiver conectada, esta versão encaminhará todo o tráfego IPv4 selecionado pela configuração. Feche jogos competitivos e anticheats durante os primeiros testes.</aside>
     </main>
+    <script src="catalog-shared.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

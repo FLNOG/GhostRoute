@@ -9,7 +9,75 @@ const diagnostics   = require('./vpn/network-diagnostics');
 const selective     = require('./vpn/selective-controller');
 const installedApps = require('./vpn/installed-apps');
 const identityManager = require('./vpn/identity-manager');
+const uwpDiscovery  = require('./vpn/uwp-discovery');
+const { validateRouteRule, classifyRisk, migrateOldItem } = require('./vpn/app-model');
+const {
+  canonicalId, createRefreshDeduplicator, migrateOldConfig,
+  resolveAppsFromCatalog, resolveSelectionWithRefresh, serializeForSave,
+  isValidId, updateCatalogInPlace, removeManualFromConfig,
+  validateResolvedSelection, normalizeSelectedIds,
+} = require('./catalog-utils');
 const { createShutdownController } = require('./shutdown-controller');
+
+// ── Catálogo autoritativo ────────────────────────────────────────────────
+// A única fonte de verdade para routeRule, launchTarget, compatibility, risk.
+// Populado por apps:list. Renderer e settings.json NUNCA são autoridade.
+let appCatalog = new Map(); // id → CanonicalApp
+
+function updateAppCatalog(apps) {
+  // Usa updateCatalogInPlace: muta o mesmo Map, preservando referências externas
+  updateCatalogInPlace(appCatalog, apps);
+}
+
+// Refresh deduplicado: múltiplas chamadas concorrentes compartilham a mesma operação
+const refreshCatalogNow = createRefreshDeduplicator(async () => {
+  const config = loadConfig();
+  const [desktopApps, uwpApps, runningPaths] = await Promise.all([
+    installedApps.discoverInstalledApps(),
+    uwpDiscovery.discoverUwpApps(),
+    installedApps.runningExecutablePaths(),
+  ]);
+  const markRunning = a => ({
+    ...a,
+    running:      !!(a.path && runningPaths.has(a.path.toLowerCase())),
+    runningState: !a.path ? 'unknown' : (runningPaths.has(a.path.toLowerCase()) ? 'running' : 'stopped'),
+  });
+  const allApps = [...desktopApps.map(markRunning), ...uwpApps.map(markRunning)];
+
+  // Reidratar itens manuais salvos
+  for (const manual of (config.manualApps || [])) {
+    if (!manual.path || allApps.find(a => a.id === manual.id)) continue;
+    const normalized = installedApps.normalizeItem(manual);
+    if (normalized) {
+      const canonical = buildManualCanonical(normalized);
+      allApps.push(markRunning(canonical));
+    } else {
+      allApps.push({
+        id: manual.id, name: manual.name, path: manual.path,
+        kind: 'desktop', source: 'manual',
+        unavailable: true, unavailableReason: 'Arquivo não encontrado',
+        compatibility: 'unsupported', risk: { level: 'none', label: '' },
+        routeRule: '', running: false, runningState: 'unknown',
+      });
+    }
+  }
+  updateAppCatalog(allApps);
+});
+
+function buildManualCanonical(normalized) {
+  const routeRule = validateRouteRule(normalized.path) || '';
+  return {
+    ...normalized,
+    kind: 'desktop', source: 'manual',
+    routeRule, launchTarget: normalized.path,
+    launchArgs: [], workingDirectory: '',
+    packageFamilyName: '', appUserModelId: '', installRoot: '',
+    risk: installedApps.classifyAppRisk(normalized),
+    compatibility: routeRule ? 'supported' : 'unsupported',
+    isLauncher: false, launcherNote: '',
+    running: false, runningState: 'unknown',
+  };
+}
 const { createCleanupFn }          = require('./app-cleanup');
 const { selectiveStateForMenu }    = require('./tray-menu-state');
 
@@ -165,22 +233,22 @@ function loadConfig() {
     const securePath = storedPath.toLowerCase().endsWith('.conf')
       ? wireguard.secureConfigPath(storedPath)
       : storedPath;
+    const { selectedAppIds, manualApps } = migrateOldConfig(saved);
     const merged = {
       ...defaultConfig(),
       ...saved,
       wireGuardConfigPath: securePath,
       selectiveConfigPath: String(saved.selectiveConfigPath || defaultConfig().selectiveConfigPath),
       discordPath: String(saved.discordPath || defaultConfig().discordPath),
-      selectedApps: Array.isArray(saved.selectedApps) && saved.selectedApps.length
-        ? saved.selectedApps.map(installedApps.normalizeItem).filter(Boolean)
-        : defaultConfig().selectedApps
+      selectedAppIds,
+      manualApps,
     };
     const identity = identityManager.load(app.getPath('userData'));
     return { ...merged, selectiveConfigReady: identity?.status === 'active' || Boolean(merged.selectiveConfigPath && fs.existsSync(merged.selectiveConfigPath)) };
   } catch {
     const defaults = defaultConfig();
     const identity = identityManager.load(app.getPath('userData'));
-    return { ...defaults, selectiveConfigReady: identity?.status === 'active' || Boolean(defaults.selectiveConfigPath && fs.existsSync(defaults.selectiveConfigPath)) };
+    return { ...defaults, selectiveConfigReady: identity?.status === 'active' || Boolean(defaults.selectiveConfigPath && fs.existsSync(defaults.selectiveConfigPath)), selectedAppIds: [], manualApps: [] };
   }
 }
 
@@ -189,9 +257,10 @@ function saveConfig(config) {
     wireGuardConfigPath: String(config.wireGuardConfigPath || ''),
     selectiveConfigPath: String(config.selectiveConfigPath || ''),
     discordPath: String(config.discordPath || ''),
-    selectedApps: Array.isArray(config.selectedApps)
-      ? config.selectedApps.map(installedApps.normalizeItem).filter(Boolean).map(({ name, path: executablePath, source }) => ({ name, path: executablePath, source }))
-      : []
+    selectedAppIds: Array.isArray(config.selectedAppIds) ? config.selectedAppIds : [],
+    manualApps: Array.isArray(config.manualApps)
+      ? config.manualApps.map(a => ({ id: a.id, name: a.name, path: a.path })).filter(a => a.id && a.path)
+      : [],
   };
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
   fs.writeFileSync(configPath(), JSON.stringify(safe, null, 2), { mode: 0o600 });
@@ -335,25 +404,24 @@ ipcMain.handle('vpn:disconnect', async (_event, rawPath) => {
 ipcMain.handle('vpn:diagnostics', () => diagnostics.runDiagnostics());
 
 ipcMain.handle('apps:list', async () => {
-  const [discovered, runningPaths] = await Promise.all([
-    installedApps.discoverInstalledApps(),
-    installedApps.runningExecutablePaths()
-  ]);
-  const selected = loadConfig().selectedApps || [];
-  const combined = [...discovered, ...selected];
-  const seen = new Set();
-  const unique = combined.filter(item => {
-    const id = item.path.toLowerCase();
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
-  return Promise.all(unique.map(async item => {
+  // Descobre desktop, UWP e processos em paralelo + reidrata manuais
+  await refreshCatalogNow();
+
+  const config = loadConfig();
+
+  // Determinar seleção persistida
+  const selectedIds = new Set(config.selectedAppIds || []);
+
+  // Construir lista final com icon e seleção
+  const allItems = [...appCatalog.values()].filter((v, i, a) => a.indexOf(v) === i); // unique values
+  return Promise.all(allItems.map(async item => {
+    const isSelected = selectedIds.has(item.id);
+    if (item.kind === 'uwp') return { ...item, icon: '', selected: isSelected };
     try {
       const icon = await app.getFileIcon(item.path, { size: 'small' });
-      return { ...item, running: runningPaths.has(item.path.toLowerCase()), risk: installedApps.classifyAppRisk(item), icon: icon.toDataURL() };
+      return { ...item, icon: icon.toDataURL(), selected: isSelected };
     } catch {
-      return { ...item, running: runningPaths.has(item.path.toLowerCase()), risk: installedApps.classifyAppRisk(item), icon: '' };
+      return { ...item, icon: '', selected: isSelected };
     }
   }));
 });
@@ -364,15 +432,59 @@ ipcMain.handle('apps:add-manual', async () => {
     filters: [{ name: 'Aplicativo Windows', extensions: ['exe'] }]
   });
   if (result.canceled) return null;
-  const item = installedApps.normalizeItem({ path: result.filePaths[0], name: path.basename(result.filePaths[0], '.exe'), source: 'manual' });
-  return item ? { ...item, running: false, risk: installedApps.classifyAppRisk(item), icon: '' } : null;
+  const filePath = result.filePaths[0];
+  const normalized = installedApps.normalizeItem({ path: filePath, name: path.basename(filePath, '.exe'), source: 'manual' });
+  if (!normalized) return null;
+
+  // Verificar risco — anticheat nunca é aceito como manual
+  const risk = installedApps.classifyAppRisk(normalized);
+  if (risk.level === 'blocked') {
+    throw new Error(`${normalized.name} é um anticheat e não pode ser adicionado.`);
+  }
+
+  // Construir item canônico completo
+  const canonical = buildManualCanonical(normalized);
+
+  // Inserir no catálogo imediatamente
+  appCatalog.set(canonical.id, canonical);
+  if (canonical.appUserModelId) appCatalog.set(canonical.appUserModelId.toLowerCase(), canonical);
+
+  // Persistir item manual
+  const config = loadConfig();
+  const manualApps = config.manualApps || [];
+  if (!manualApps.find(a => a.id === canonical.id)) {
+    manualApps.push({ id: canonical.id, name: canonical.name, path: canonical.path });
+    saveConfig({ ...config, manualApps });
+  }
+
+  return { ...canonical, icon: '' };
 });
 
-ipcMain.handle('apps:save-selection', (_event, rawApps) => {
+ipcMain.handle('apps:save-selection', (_event, rawIds) => {
   guardShutdown('apps:save-selection');
-  const selectedApps = Array.isArray(rawApps) ? rawApps.map(installedApps.normalizeItem).filter(Boolean) : [];
-  saveConfig({ ...loadConfig(), selectedApps });
-  return selectedApps;
+  const config = loadConfig();
+  const knownManualIds = (config.manualApps || []).map(a => a.id).filter(isValidId);
+  // normalizeSelectedIds: trim, deduplicado, valida contra catálogo + manuais conhecidos
+  const ids = normalizeSelectedIds(rawIds, appCatalog, knownManualIds);
+  saveConfig({ ...config, selectedAppIds: ids });
+  return ids;
+});
+
+ipcMain.handle('apps:remove-manual', (_event, rawId) => {
+  guardShutdown('apps:remove-manual');
+  if (!isValidId(rawId)) throw new Error('ID inválido para remoção.');
+  const id = String(rawId).trim();
+
+  const config = loadConfig();
+  const { config: newConfig, wasManual } = removeManualFromConfig(config, id);
+  if (!wasManual) {
+    // ID não é manual — não modifica config nem catálogo; idempotente
+    return { removed: false };
+  }
+  // Salva configuração primeiro; só então remove do catálogo em memória
+  saveConfig(newConfig);
+  appCatalog.delete(id);
+  return { removed: true };
 });
 
 ipcMain.handle('identity:status', () => identityManager.publicIdentity(identityManager.load(app.getPath('userData'))));
@@ -403,6 +515,21 @@ ipcMain.handle('selective:start', async (_event, options) => {
   const localConfig = loadConfig();
   if (!localConfig.selectiveConfigReady) throw new Error('A identidade VPN deste computador ainda não foi provisionada.');
   const identity = identityManager.load(app.getPath('userData'));
+
+  // Resolver apps via catálogo com refresh se necessário
+  // (nunca descarta parcial — ou todos os IDs resolvem ou rejeita tudo)
+  const rawIds = Array.isArray(options?.apps)
+    ? options.apps.map(item => typeof item === 'string' ? item : canonicalId(item)).filter(Boolean)
+    : [];
+  const resolvedApps = await resolveSelectionWithRefresh(rawIds, appCatalog, refreshCatalogNow);
+  if (resolvedApps.length === 0 && rawIds.length > 0) {
+    throw new Error('Nenhum aplicativo selecionado foi encontrado no catálogo atual. Recarregue a lista.');
+  }
+
+  // Validar que todos os itens resolvidos são selecionáveis
+  // (indisponíveis, incompatíveis ou bloqueados NUNCA iniciam parcialmente)
+  validateResolvedSelection(resolvedApps);
+
   let sessionConfig = '';
   try {
     sessionConfig = identity?.status === 'active'
@@ -410,7 +537,7 @@ ipcMain.handle('selective:start', async (_event, options) => {
       : localConfig.selectiveConfigPath;
     return await selective.start({
       sourceConfigPath: sessionConfig,
-      apps: Array.isArray(options?.apps) ? options.apps : [],
+      apps: resolvedApps,
       runtimeDirectory: app.getPath('userData'),
       launchApps: options?.launchApps !== false
     });
